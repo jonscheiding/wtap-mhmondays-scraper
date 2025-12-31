@@ -1,0 +1,24 @@
+{
+  "name": "code-review-load-metrics",
+  "version": "1.5.0",
+  "type": "module",
+  "scripts": {
+    "lint": "eslint",
+    "prepare": "husky"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.2",
+    "@eslint/json": "^0.14.0",
+    "@types/node": "^25.0.3",
+    "eslint": "^9.39.2",
+    "globals": "^16.5.0",
+    "husky": "^9.1.7",
+    "jiti": "^2.6.1",
+    "lint-staged": "^16.2.7",
+    "prettier": "^3.7.4",
+    "sort-package-json": "^3.6.0",
+    "typescript": "^5.4.0",
+    "typescript-eslint": "^8.51.0"
+  },
+  "packageManager": "pnpm@9.12.3+sha512.cce0f9de9c5a7c95bef944169cc5dfe8741abfb145078c0d508b868056848a87c81e626246cb60967cbd7fd29a6c062ef73ff840d96b3c86c40ac92cf4a813ee"
+}

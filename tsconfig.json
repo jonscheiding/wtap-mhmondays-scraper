@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "esModuleInterop": true,
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "noEmit": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitAny": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noUncheckedSideEffectImports": true,
+    "strict": true,
+    "target": "ES2022"
+  }
+}
