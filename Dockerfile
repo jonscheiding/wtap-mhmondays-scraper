@@ -29,9 +29,15 @@ RUN cat > /app/run-cron.sh << 'EOF'
 #!/bin/sh
 set -e
 
-# Create crontab entry
+# Run scraper immediately on startup
+echo "Starting initial scrape run..."
+cd /app && DATA_DIR=$DATA_DIR pnpm run scrape >> /var/log/scraper.log 2>&1 || true
+
+# Create crontab entry for scheduled runs
 CRON_JOB="$SCHEDULE cd /app && DATA_DIR=$DATA_DIR pnpm run scrape >> /var/log/scraper.log 2>&1"
 echo "$CRON_JOB" | crontab -
+
+echo "Cron job scheduled: $SCHEDULE"
 
 # Start cron daemon in foreground
 crond -f -l 2
