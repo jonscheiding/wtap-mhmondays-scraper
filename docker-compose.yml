@@ -1,0 +1,26 @@
+version: "3.8"
+
+services:
+  wtap-scraper:
+    build: .
+    container_name: wtap-scraper
+    environment:
+      # Schedule in cron format (default: daily at 2 AM)
+      # Examples:
+      #   "0 2 * * *"     - Every day at 2 AM
+      #   "0 */6 * * *"   - Every 6 hours
+      #   "0 0 * * *"     - Every day at midnight
+      SCHEDULE: "0 2 * * *"
+      # Data directory where audio files will be stored
+      DATA_DIR: /data
+      NODE_ENV: production
+    volumes:
+      # Mount local directory to persist downloaded audio files
+      - ./data:/data
+    restart: unless-stopped
+    # Optional: uncomment for logs
+    # logging:
+    #   driver: "json-file"
+    #   options:
+    #     max-size: "10m"
+    #     max-file: "3"

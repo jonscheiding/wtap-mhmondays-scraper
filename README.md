@@ -18,7 +18,7 @@ pnpm install
 
 ## Usage
 
-Run the scraper:
+Run the scraper locally:
 
 ```bash
 pnpm run scrape
@@ -30,6 +30,58 @@ The scraper will:
 2. Find all matching episode pages
 3. Extract video URLs from each page
 4. Download videos to the `.data` directory if they don't already exist
+5. Extract audio from videos and delete the original video files
+
+### Docker Usage
+
+#### Build and run with Docker Compose (recommended)
+
+```bash
+docker-compose up -d
+```
+
+This will start the scraper container with:
+
+- Default schedule: Daily at 2 AM UTC
+- Data directory: `./data` (mounted locally)
+- Auto-restart on failure
+
+#### Configure the schedule and data directory
+
+Edit `docker-compose.yml` to customize:
+
+```yaml
+environment:
+  # Cron format: minute hour day month weekday
+  # Examples:
+  #   "0 2 * * *"     - Every day at 2 AM
+  #   "0 */6 * * *"   - Every 6 hours
+  #   "30 1 * * 0"    - Every Sunday at 1:30 AM
+  SCHEDULE: "0 2 * * *"
+  DATA_DIR: /data
+```
+
+#### Build Docker image manually
+
+```bash
+docker build -t wtap-scraper .
+docker run -d \
+  -e SCHEDULE="0 2 * * *" \
+  -e DATA_DIR=/data \
+  -v $(pwd)/data:/data \
+  --restart unless-stopped \
+  wtap-scraper
+```
+
+#### View logs
+
+```bash
+# With Docker Compose
+docker-compose logs -f wtap-scraper
+
+# With standalone container
+docker logs -f wtap-scraper
+```
 
 ## How It Works
 
@@ -57,11 +109,15 @@ The scraper will:
 ```
 .
 ├── src/
-│   └── scraper.ts          # Main scraper script
-├── .data/                   # Downloaded videos (gitignored)
+│   └── scraper.ts           # Main scraper script
+├── .data/                    # Downloaded audio files (gitignored)
+├── data/                     # Docker mounted data directory
+├── Dockerfile                # Container image definition
+├── docker-compose.yml        # Docker Compose configuration
 ├── package.json
 ├── tsconfig.json
-└── eslint.config.ts
+├── eslint.config.ts
+└── AGENTS.md
 ```
 
 ## Dependencies
@@ -71,7 +127,14 @@ The scraper will:
 - **puppeteer**: Headless browser for JavaScript rendering
 - **tsx**: TypeScript execution
 
+## External Dependencies
+
+- **ffmpeg**: Required for audio extraction from videos
+  - Local installation: Install via your package manager (brew, apt, etc.)
+  - Docker: Automatically installed in the container
+
 ## Environment
 
-- Node.js 18+
-- Works on macOS, Linux, and Windows
+- Node.js 20+ (local)
+- Docker and Docker Compose (for containerized deployment)
+- ffmpeg (for audio extraction)

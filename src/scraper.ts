@@ -10,7 +10,7 @@ import puppeteer from "puppeteer";
 
 const execFileAsync = promisify(execFile);
 
-const DATA_DIR = path.join(process.cwd(), ".data");
+const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), ".data");
 const SEARCH_URL =
   "https://www.wtap.com/search/?query=mental%20health%20mondays";
 
