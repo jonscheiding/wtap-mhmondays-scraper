@@ -11,6 +11,7 @@ import puppeteer from "puppeteer";
 const execFileAsync = promisify(execFile);
 
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), ".data");
+const CHROMIUM_PATH = process.env.CHROMIUM_PATH || "chromium";
 const SEARCH_URL =
   "https://www.wtap.com/search/?query=mental%20health%20mondays";
 
@@ -60,6 +61,7 @@ async function searchForVideos(): Promise<VideoInfo[]> {
     // Use Puppeteer to render JavaScript-heavy page
     browser = await puppeteer.launch({
       headless: true,
+      executablePath: CHROMIUM_PATH,
       args: ["--no-sandbox", "--disable-setuid-sandbox"],
     });
 
@@ -180,14 +182,24 @@ async function downloadVideo(
   filename: string,
 ): Promise<boolean> {
   const filePath = path.join(DATA_DIR, filename);
+  const audioPath = path.join(DATA_DIR, filename.replace(/\.mp4$/i, ".mp3"));
 
-  // Check if file already exists
+  // Check if audio file already exists (no need to re-download/convert)
+  try {
+    await fs.stat(audioPath);
+    console.log(`Audio already exists: ${path.basename(audioPath)}`);
+    return false; // Don't call extractAudio since audio is already done
+  } catch {
+    // Audio doesn't exist, check for video
+  }
+
+  // Check if video file already exists
   try {
     await fs.stat(filePath);
     console.log(`Video already exists: ${filename}`);
-    return true;
+    return true; // Return true so extractAudio will be called
   } catch {
-    // File doesn't exist, proceed with download
+    // Video doesn't exist, proceed with download
   }
 
   try {
@@ -228,7 +240,7 @@ async function extractAudio(videoFilename: string): Promise<boolean> {
   const videoPath = path.join(DATA_DIR, videoFilename);
   const audioPath = path.join(
     DATA_DIR,
-    videoFilename.replace(/\.mp4$/i, ".m4a"),
+    videoFilename.replace(/\.mp4$/i, ".mp3"),
   );
 
   try {
