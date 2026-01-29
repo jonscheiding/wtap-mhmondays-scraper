@@ -7,6 +7,7 @@ import { pipeline } from "stream/promises";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import puppeteer from "puppeteer";
+import { parse as parseYAML, stringify as stringifyYAML } from "yaml";
 import nodeID3, { type Tags } from "node-id3";
 
 const execFileAsync = promisify(execFile);
@@ -17,6 +18,12 @@ const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), ".data");
 const CHROMIUM_PATH = process.env.CHROMIUM_PATH;
 const SEARCH_URL =
   "https://www.wtap.com/wtap-plus/podcasts/mental-health-mondays/";
+const GENERATE_YAML = /^(1|true)$/i.test(process.env.GENERATE_YAML ?? "false");
+const YAML_OUTPUT_DIR =
+  process.env.YAML_OUTPUT_DIR || path.join(process.cwd(), ".data");
+const YAML_OUTPUT_FILE = process.env.YAML_OUTPUT_FILE || "episodes.yml";
+const YAML_TEMPLATE_PATH =
+  process.env.YAML_TEMPLATE_PATH || path.join(process.cwd(), "template.yml");
 
 interface VideoMetadata {
   streams?: VideoStream[];
@@ -345,6 +352,78 @@ function tagAudio(audioPath: string, meta: ArticleMeta): boolean {
   }
 }
 
+type EpisodeYaml = {
+  file: string;
+  title: string;
+  description: string;
+  pub_date: string;
+  explicit: boolean;
+  season: number;
+  episode: number;
+  episode_type: "full" | "trailer" | "bonus";
+};
+
+type TemplateYaml = {
+  name?: string;
+  title?: string;
+  "author-name"?: string;
+  description?: string;
+  language?: string;
+  explicit?: boolean;
+  episodes?: EpisodeYaml[];
+  [k: string]: unknown;
+};
+
+async function readYamlTemplateOrExisting(
+  outPath: string,
+  templatePath: string,
+): Promise<TemplateYaml> {
+  try {
+    const text = await fs.readFile(outPath, "utf8");
+    return (parseYAML(text) as TemplateYaml) ?? {};
+  } catch {
+    // Fallback to template file in repo
+    try {
+      const text = await fs.readFile(templatePath, "utf8");
+      return (parseYAML(text) as TemplateYaml) ?? {};
+    } catch (err) {
+      console.warn(
+        "YAML template not found; creating a minimal structure",
+        err,
+      );
+      return { episodes: [] };
+    }
+  }
+}
+
+function upsertEpisodes(
+  doc: TemplateYaml,
+  newEpisodes: Omit<EpisodeYaml, "episode">[],
+): TemplateYaml {
+  const episodes = Array.isArray(doc.episodes) ? [...doc.episodes] : [];
+  const existingFiles = new Set(episodes.map((e) => e.file));
+  const existingMax = episodes.reduce((m, e) => Math.max(m, e.episode || 0), 0);
+  let next = existingMax + 1;
+
+  for (const ep of newEpisodes) {
+    // Skip if already present by filename
+    if (existingFiles.has(ep.file)) continue;
+    episodes.push({ ...ep, episode: next++ });
+    existingFiles.add(ep.file);
+  }
+
+  // Sort by episode number to keep things tidy
+  episodes.sort((a, b) => (a.episode ?? 0) - (b.episode ?? 0));
+  return { ...doc, episodes };
+}
+
+async function writeYaml(doc: TemplateYaml, outPath: string): Promise<void> {
+  const yaml = stringifyYAML(doc);
+  await fs.mkdir(path.dirname(outPath), { recursive: true });
+  await fs.writeFile(outPath, yaml, "utf8");
+  console.log(`Wrote YAML episode list: ${outPath}`);
+}
+
 async function downloadVideo(
   videoUrl: string,
   filename: string,
@@ -454,6 +533,8 @@ async function main(): Promise<void> {
       return;
     }
 
+    const episodesForYaml: Omit<EpisodeYaml, "episode">[] = [];
+
     for (const video of videos) {
       console.log(`\nProcessing: ${video.title}`);
 
@@ -488,8 +569,45 @@ async function main(): Promise<void> {
         await fs.stat(audioPath);
         tagAudio(audioPath, meta);
         await setFileModTime(audioPath, meta.pubDate);
+
+        if (GENERATE_YAML) {
+          // Prepare YAML episode entry using available metadata
+          const yamlEp: Omit<EpisodeYaml, "episode"> = {
+            file: path.basename(audioPath),
+            title: meta.title ?? "Mental Health Mondays",
+            description: meta.description ?? "",
+            pub_date: (meta.pubDate
+              ? new Date(meta.pubDate)
+              : new Date()
+            ).toISOString(),
+            explicit: false,
+            season: 1,
+            episode_type: "full",
+          };
+          episodesForYaml.push(yamlEp);
+        }
       } catch {
         console.warn(`Audio file not found, skipping tag for ${filename}`);
+      }
+    }
+
+    if (GENERATE_YAML && episodesForYaml.length > 0) {
+      try {
+        const outPath = path.join(YAML_OUTPUT_DIR, YAML_OUTPUT_FILE);
+        const doc = await readYamlTemplateOrExisting(
+          outPath,
+          YAML_TEMPLATE_PATH,
+        );
+
+        // Sort new episodes by pub_date for deterministic numbering
+        episodesForYaml.sort(
+          (a, b) =>
+            new Date(a.pub_date).getTime() - new Date(b.pub_date).getTime(),
+        );
+        const updated = upsertEpisodes(doc, episodesForYaml);
+        await writeYaml(updated, outPath);
+      } catch (err) {
+        console.error("Failed to generate YAML file:", err);
       }
     }
 

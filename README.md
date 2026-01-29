@@ -9,6 +9,7 @@ A TypeScript-based web scraper that downloads "Mental Health Mondays" episodes f
 - Downloads videos in MP4 format
 - Stores videos in a `.data` directory
 - Checks for existing files to avoid re-downloading
+- Optionally generates a YAML file listing episodes (separate from audio dir)
 
 ## Installation
 
@@ -31,6 +32,7 @@ The scraper will:
 3. Extract video URLs from each page
 4. Download videos to the `.data` directory if they don't already exist
 5. Extract audio from videos and delete the original video files
+6. Optionally, update a YAML file with episode metadata
 
 ### Docker Usage
 
@@ -59,6 +61,11 @@ environment:
   #   "30 1 * * 0"    - Every Sunday at 1:30 AM
   SCHEDULE: "0 2 * * *"
   DATA_DIR: /data
+  # YAML generation (optional)
+  GENERATE_YAML: "true" # Enable YAML episode list output
+  YAML_OUTPUT_DIR: /config # Destination directory for YAML
+  YAML_OUTPUT_FILE: episodes.yml # File name for YAML output
+  YAML_TEMPLATE_PATH: /app/template.yml # Template to base output on
 ```
 
 #### Build Docker image manually
@@ -102,7 +109,21 @@ docker logs -f wtap-scraper
 
 - Checks if file already exists to avoid duplicates
 - Downloads videos using streaming to handle large files efficiently
-- Saves with episode numbers in filename (e.g., `Mental-Health-Mondays-Ep1.mp4`)
+- Saves with dates in filename (e.g., Mental-Health-Mondays-YYYY-MM-DD.mp4)
+
+### YAML Generation (optional)
+
+If `GENERATE_YAML` is enabled, the scraper will:
+
+- Read the existing YAML at `${YAML_OUTPUT_DIR}/${YAML_OUTPUT_FILE}` if present,
+  otherwise fall back to `template.yml` in the project root
+- Append entries for episodes processed in the current run with:
+  - file: MP3 filename
+  - title, description, pub_date (from the article)
+  - explicit: false, season: 1, episode_type: full
+- Assign a monotonically increasing `episode` number by taking the current
+  maximum in the YAML and incrementing for each new item
+- Avoid duplicates by skipping episodes whose `file` already exists in YAML
 
 ## File Structure
 

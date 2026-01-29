@@ -1,0 +1,15 @@
+name: "mental-health-mondays"
+title: "WTAP Mental Health Mondays"
+author-name: "WTAP"
+description: ""
+language: "en"
+explicit: false
+episodes:
+  - file: "episode-filename.mp3"
+    title: "Episode Title"
+    description: "Episode Description"
+    pub_date: "2025-01-01T08:00:00Z"
+    explicit: false
+    season: 1
+    episode: 1
+    episode_type: "full"
