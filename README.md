@@ -9,7 +9,7 @@ A TypeScript-based web scraper that downloads "Mental Health Mondays" episodes f
 - Downloads videos in MP4 format
 - Stores videos in a `.data` directory
 - Checks for existing files to avoid re-downloading
-- Optionally generates a YAML file listing episodes (separate from audio dir)
+- Generates a YAML file listing episodes (can be saved separate from audio dir)
 
 ## Installation
 
@@ -32,7 +32,7 @@ The scraper will:
 3. Extract video URLs from each page
 4. Download videos to the `.data` directory if they don't already exist
 5. Extract audio from videos and delete the original video files
-6. Optionally, update a YAML file with episode metadata
+6. Update a YAML file with episode metadata
 
 ### Docker Usage
 
@@ -48,7 +48,7 @@ This will start the scraper container with:
 - Data directory: `./data` (mounted locally)
 - Auto-restart on failure
 
-#### Configure the schedule and data directory
+#### Configure the schedule, data, and YAML output
 
 Edit `docker-compose.yml` to customize:
 
@@ -61,10 +61,8 @@ environment:
   #   "30 1 * * 0"    - Every Sunday at 1:30 AM
   SCHEDULE: "0 2 * * *"
   DATA_DIR: /data
-  # YAML generation (optional)
-  GENERATE_YAML: "true" # Enable YAML episode list output
-  YAML_OUTPUT_DIR: /config # Destination directory for YAML
-  YAML_OUTPUT_FILE: episodes.yml # File name for YAML output
+  # YAML output configuration
+  YAML_OUTPUT_PATH: /config/episodes.yml # Destination path for YAML
   YAML_TEMPLATE_PATH: /app/template.yml # Template to base output on
 ```
 
@@ -111,19 +109,20 @@ docker logs -f wtap-scraper
 - Downloads videos using streaming to handle large files efficiently
 - Saves with dates in filename (e.g., Mental-Health-Mondays-YYYY-MM-DD.mp4)
 
-### YAML Generation (optional)
+### YAML Generation
 
-If `GENERATE_YAML` is enabled, the scraper will:
+The scraper always maintains a YAML file with episode metadata:
 
-- Read the existing YAML at `${YAML_OUTPUT_DIR}/${YAML_OUTPUT_FILE}` if present,
-  otherwise fall back to `template.yml` in the project root
-- Append entries for episodes processed in the current run with:
+- Reads the existing YAML at `YAML_OUTPUT_PATH` if present, otherwise falls
+  back to `template.yml` in the project root
+- Removes placeholder/example entries from the template
+- Appends entries for episodes processed in the current run with:
   - file: MP3 filename
   - title, description, pub_date (from the article)
   - explicit: false, season: 1, episode_type: full
-- Assign a monotonically increasing `episode` number by taking the current
+- Assigns a monotonically increasing `episode` number by taking the current
   maximum in the YAML and incrementing for each new item
-- Avoid duplicates by skipping episodes whose `file` already exists in YAML
+- Avoids duplicates by skipping episodes whose `file` already exists in YAML
 
 ## File Structure
 

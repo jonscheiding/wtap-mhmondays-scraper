@@ -18,10 +18,9 @@ const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), ".data");
 const CHROMIUM_PATH = process.env.CHROMIUM_PATH;
 const SEARCH_URL =
   "https://www.wtap.com/wtap-plus/podcasts/mental-health-mondays/";
-const GENERATE_YAML = /^(1|true)$/i.test(process.env.GENERATE_YAML ?? "false");
-const YAML_OUTPUT_DIR =
-  process.env.YAML_OUTPUT_DIR || path.join(process.cwd(), ".data");
-const YAML_OUTPUT_FILE = process.env.YAML_OUTPUT_FILE || "episodes.yml";
+const YAML_OUTPUT_PATH =
+  process.env.YAML_OUTPUT_PATH ||
+  path.join(process.cwd(), ".data", "episodes.yml");
 const YAML_TEMPLATE_PATH =
   process.env.YAML_TEMPLATE_PATH || path.join(process.cwd(), "template.yml");
 
@@ -424,6 +423,12 @@ async function writeYaml(doc: TemplateYaml, outPath: string): Promise<void> {
   console.log(`Wrote YAML episode list: ${outPath}`);
 }
 
+function stripPlaceholderEpisodes(doc: TemplateYaml): TemplateYaml {
+  const episodes = Array.isArray(doc.episodes) ? doc.episodes : [];
+  const filtered = episodes.filter((e) => e.file !== "episode-filename.mp3");
+  return { ...doc, episodes: filtered };
+}
+
 async function downloadVideo(
   videoUrl: string,
   filename: string,
@@ -570,45 +575,42 @@ async function main(): Promise<void> {
         tagAudio(audioPath, meta);
         await setFileModTime(audioPath, meta.pubDate);
 
-        if (GENERATE_YAML) {
-          // Prepare YAML episode entry using available metadata
-          const yamlEp: Omit<EpisodeYaml, "episode"> = {
-            file: path.basename(audioPath),
-            title: meta.title ?? "Mental Health Mondays",
-            description: meta.description ?? "",
-            pub_date: (meta.pubDate
-              ? new Date(meta.pubDate)
-              : new Date()
-            ).toISOString(),
-            explicit: false,
-            season: 1,
-            episode_type: "full",
-          };
-          episodesForYaml.push(yamlEp);
-        }
+        // Prepare YAML episode entry using available metadata
+        const yamlEp: Omit<EpisodeYaml, "episode"> = {
+          file: path.basename(audioPath),
+          title: meta.title ?? "Mental Health Mondays",
+          description: meta.description ?? "",
+          pub_date: (meta.pubDate
+            ? new Date(meta.pubDate)
+            : new Date()
+          ).toISOString(),
+          explicit: false,
+          season: 1,
+          episode_type: "full",
+        };
+        episodesForYaml.push(yamlEp);
       } catch {
         console.warn(`Audio file not found, skipping tag for ${filename}`);
       }
     }
 
-    if (GENERATE_YAML && episodesForYaml.length > 0) {
-      try {
-        const outPath = path.join(YAML_OUTPUT_DIR, YAML_OUTPUT_FILE);
-        const doc = await readYamlTemplateOrExisting(
-          outPath,
-          YAML_TEMPLATE_PATH,
-        );
+    // Always generate/update YAML file
+    try {
+      const outPath = YAML_OUTPUT_PATH;
+      const doc = await readYamlTemplateOrExisting(outPath, YAML_TEMPLATE_PATH);
 
-        // Sort new episodes by pub_date for deterministic numbering
-        episodesForYaml.sort(
-          (a, b) =>
-            new Date(a.pub_date).getTime() - new Date(b.pub_date).getTime(),
-        );
-        const updated = upsertEpisodes(doc, episodesForYaml);
-        await writeYaml(updated, outPath);
-      } catch (err) {
-        console.error("Failed to generate YAML file:", err);
-      }
+      // Remove any placeholder example episodes from the template or existing file
+      const sanitized = stripPlaceholderEpisodes(doc);
+
+      // Sort new episodes by pub_date for deterministic numbering
+      episodesForYaml.sort(
+        (a, b) =>
+          new Date(a.pub_date).getTime() - new Date(b.pub_date).getTime(),
+      );
+      const updated = upsertEpisodes(sanitized, episodesForYaml);
+      await writeYaml(updated, outPath);
+    } catch (err) {
+      console.error("Failed to generate YAML file:", err);
     }
 
     console.log("\nScraping complete!");
