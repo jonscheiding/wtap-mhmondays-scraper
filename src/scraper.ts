@@ -7,11 +7,14 @@ import { pipeline } from "stream/promises";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import puppeteer from "puppeteer";
+import nodeID3, { type Tags } from "node-id3";
 
 const execFileAsync = promisify(execFile);
 
+// node-id3 is a CJS module; keep usage minimal and avoid type-level coupling
+
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), ".data");
-const CHROMIUM_PATH = process.env.CHROMIUM_PATH || "chromium";
+const CHROMIUM_PATH = process.env.CHROMIUM_PATH;
 const SEARCH_URL =
   "https://www.wtap.com/search/?query=mental%20health%20mondays";
 
@@ -177,6 +180,97 @@ async function extractVideoUrl(pageUrl: string): Promise<string | null> {
   return null;
 }
 
+interface ArticleMeta {
+  title?: string;
+  description?: string;
+  pubDate?: string;
+}
+
+async function fetchArticleMeta(pageUrl: string): Promise<ArticleMeta> {
+  try {
+    const html = await fetchPage(pageUrl);
+    const $ = cheerio.load(html);
+
+    const title =
+      $("meta[property='og:title']").attr("content") || $("title").text();
+    const description =
+      $("meta[name='description']").attr("content") ||
+      $("meta[property='og:description']").attr("content") ||
+      undefined;
+
+    const pubDate =
+      $("meta[property='article:published_time']").attr("content") ||
+      $("time[datetime]").attr("datetime") ||
+      undefined;
+
+    return { title: title?.trim(), description: description?.trim(), pubDate };
+  } catch (error) {
+    console.warn("Failed to fetch article metadata:", error);
+    return {};
+  }
+}
+
+async function setFileModTime(
+  filePath: string,
+  pubDate?: string,
+): Promise<void> {
+  if (!pubDate) return;
+  const d = new Date(pubDate);
+  if (Number.isNaN(d.getTime())) return;
+  try {
+    await fs.utimes(filePath, d, d);
+    console.log(
+      `Set file modification time for ${path.basename(filePath)} to ${d.toISOString()}`,
+    );
+  } catch (error) {
+    console.warn(
+      `Failed to set file modification time for ${path.basename(filePath)}`,
+      error,
+    );
+  }
+}
+
+function tagAudio(audioPath: string, meta: ArticleMeta): boolean {
+  try {
+    const tags: Tags = {
+      title: meta.title ?? undefined,
+      artist: "WTAP",
+      album: "Mental Health Mondays",
+      comment: {
+        language: "eng",
+        text: meta.description ?? "",
+      },
+    };
+
+    if (meta.pubDate) {
+      const d = new Date(meta.pubDate);
+      if (!Number.isNaN(d.getTime())) {
+        const yyyy = d.getFullYear();
+        const mm = String(d.getMonth() + 1).padStart(2, "0");
+        const dd = String(d.getDate()).padStart(2, "0");
+        // Use ID3v2.4 recording time (yyyy or yyyy-MM or yyyy-MM-dd are valid)
+        tags.recordingTime = `${yyyy}-${mm}-${dd}`;
+        // Also set year for ID3v2.3 compatibility
+        tags.year = String(yyyy);
+        // Set ID3v2.3 date (DDMM)
+        tags.date = `${dd}${mm}`;
+      }
+    }
+
+    const success = nodeID3.update(tags, audioPath);
+    if (success === true) {
+      console.log(`Tagged audio: ${audioPath}`);
+      return true;
+    }
+
+    console.warn(`Failed to write ID3 tags for ${audioPath}`);
+    return false;
+  } catch (error) {
+    console.error(`Error tagging audio ${audioPath}:`, error);
+    return false;
+  }
+}
+
 async function downloadVideo(
   videoUrl: string,
   filename: string,
@@ -289,8 +383,29 @@ async function main(): Promise<void> {
       const filename = sanitizeFilename(video.title);
       const downloaded = await downloadVideo(videoUrl, filename);
 
+      const audioPath = path.join(
+        DATA_DIR,
+        filename.replace(/\.mp4$/i, ".mp3"),
+      );
+
       if (downloaded) {
-        await extractAudio(filename);
+        const extracted = await extractAudio(filename);
+        if (!extracted) {
+          console.warn(
+            `Skipping tagging for ${filename} - audio extraction failed`,
+          );
+          continue;
+        }
+      }
+
+      // Tag audio if it exists
+      try {
+        await fs.stat(audioPath);
+        const meta = await fetchArticleMeta(video.url);
+        tagAudio(audioPath, meta);
+        await setFileModTime(audioPath, meta.pubDate);
+      } catch {
+        console.warn(`Audio file not found, skipping tag for ${filename}`);
       }
     }
 
