@@ -16,7 +16,11 @@ const execFileAsync = promisify(execFile);
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), ".data");
 const CHROMIUM_PATH = process.env.CHROMIUM_PATH;
 const SEARCH_URL =
-  "https://www.wtap.com/search/?query=mental%20health%20mondays";
+  "https://www.wtap.com/wtap-plus/podcasts/mental-health-mondays/";
+
+interface VideoMetadata {
+  streams?: VideoStream[];
+}
 
 interface VideoInfo {
   title: string;
@@ -27,10 +31,6 @@ interface VideoInfo {
 interface VideoStream {
   stream_type?: string;
   url?: string;
-}
-
-interface VideoMetadata {
-  streams?: VideoStream[];
 }
 
 async function ensureDataDir(): Promise<void> {
@@ -71,10 +71,12 @@ async function searchForVideos(): Promise<VideoInfo[]> {
     const page = await browser.newPage();
     await page.goto(SEARCH_URL, { waitUntil: "networkidle2", timeout: 30000 });
 
-    // Wait for search results to load
-    await page.waitForSelector("#resultdata", { timeout: 5000 }).catch(() => {
-      console.log("Result data container not found, proceeding anyway");
-    });
+    // Wait specifically for episode cards on the index page
+    await page
+      .waitForSelector("div.card-body", { timeout: 15000 })
+      .catch(() => {
+        console.log("Episode cards not found yet, proceeding anyway");
+      });
 
     // Get the page content
     const html = await page.content();
@@ -82,25 +84,64 @@ async function searchForVideos(): Promise<VideoInfo[]> {
 
     const videos: VideoInfo[] = [];
 
-    // Look for links that match "Mental Health Mondays, Ep N" pattern
-    $("a").each((_index, element) => {
-      const title = $(element).text().trim();
-      const href = $(element).attr("href");
+    const isEpisodeUrl = (href: string): boolean => {
+      try {
+        const u = href.startsWith("http")
+          ? new URL(href)
+          : new URL(href, "https://www.wtap.com");
+        // Exclude index and known non-episode paths
+        if (u.href.replace(/\/?$/, "/") === SEARCH_URL) return false;
+        if (u.pathname === "/homepage") return false;
+        // Accept article-style URLs: /YYYY/MM/DD/slug/
+        return /^\/\d{4}\/\d{2}\/\d{2}\//.test(u.pathname);
+      } catch {
+        return false;
+      }
+    };
 
-      if (
-        title.match(/Mental\s+Health\s+Mondays,?\s+(?:Ep\.?\s+)?\d+/i) &&
-        href
-      ) {
+    // Parse episode cards and extract links
+    $("div.card-body").each((_i, card) => {
+      const linkEl = $(card).find("a[href]").first();
+      const href = linkEl.attr("href")?.trim();
+      if (!href) return;
+
+      // Require typical article date-path URLs
+      if (!isEpisodeUrl(href)) return;
+
+      const url = href.startsWith("http")
+        ? href
+        : new URL(href, "https://www.wtap.com").href;
+
+      // Skip if it links back to the index itself
+      if (url.replace(/\/?$/, "/") === SEARCH_URL) return;
+
+      // Prefer heading text inside the card, then link text
+      const title =
+        $(card).find("h1, h2, h3").first().text().trim() ||
+        linkEl.text().trim() ||
+        "Mental Health Mondays";
+
+      if (!videos.some((v) => v.url === url)) {
+        videos.push({ title, url });
+      }
+    });
+
+    // If nothing found (unexpected), fall back to any anchors on the page that look like article URLs
+    if (videos.length === 0) {
+      $("a[href]").each((_index, element) => {
+        const href = $(element).attr("href")?.trim();
+        if (!href) return;
+        if (!isEpisodeUrl(href)) return;
         const url = href.startsWith("http")
           ? href
           : new URL(href, "https://www.wtap.com").href;
 
-        // Avoid duplicates
+        const title = $(element).text().trim() || "Mental Health Mondays";
         if (!videos.some((v) => v.url === url)) {
           videos.push({ title, url });
         }
-      }
-    });
+      });
+    }
 
     console.log(`Found ${videos.length} Mental Health Mondays episodes`);
     return videos;
@@ -118,62 +159,95 @@ async function extractVideoUrl(pageUrl: string): Promise<string | null> {
   console.log(`Extracting video URL from: ${pageUrl}`);
   const html = await fetchPage(pageUrl);
 
-  // Extract video data from Fusion metadata JSON
-  const metadataMatch = html.match(/Fusion\.globalContent=({.*?});/s);
+  // 1) Try to extract Arc/Fusion metadata JSON
+  const metadataMatch = html.match(/Fusion\.globalContent=({[\s\S]*?});/);
   if (metadataMatch) {
     try {
       const metadata = JSON.parse(metadataMatch[1]) as VideoMetadata;
-
-      // Look for MP4 video streams (highest quality)
       if (metadata.streams && Array.isArray(metadata.streams)) {
-        // Find the highest quality MP4 stream
-        const mp4Stream = metadata.streams.find(
-          (stream) => stream.stream_type === "mp4",
-        );
-        if (mp4Stream?.url) {
-          return mp4Stream.url;
-        }
-
-        // Fall back to HLS stream if no MP4
-        const hlsStream = metadata.streams.find(
-          (stream) => stream.stream_type === "ts",
-        );
-        if (hlsStream?.url) {
-          return hlsStream.url;
-        }
+        const mp4Stream = metadata.streams.find((s) => s.stream_type === "mp4");
+        if (mp4Stream?.url) return mp4Stream.url;
+        const hlsStream = metadata.streams.find((s) => s.stream_type === "ts");
+        if (hlsStream?.url) return hlsStream.url;
       }
-    } catch (error) {
-      console.warn("Failed to parse video metadata:", error);
+    } catch {
+      // ignore JSON parse errors
     }
   }
 
-  // Fallback to HTML parsing methods
   const $ = cheerio.load(html);
 
-  // Look for video sources - common patterns on news sites
-  // Check for <video> tags
-  const videoSrc = $("video source").attr("src");
+  // 2) Direct <video><source></source></video>
+  const videoSrc = $("video source").attr("src") || $("video").attr("src");
   if (videoSrc) return videoSrc;
 
-  // Check for iframe with video sources
-  const iframeSrc = $("iframe").attr("src");
-  if (iframeSrc) {
-    // If it's a YouTube or other embedded video, return the iframe src
-    if (iframeSrc.includes("youtube") || iframeSrc.includes("vimeo")) {
-      return iframeSrc;
-    }
-  }
+  // 3) Look for obvious media URLs in inline scripts
+  const scriptsText = $("script")
+    .map((_i, el) => $(el).html() || "")
+    .get()
+    .join("\n");
 
-  // Check for data-video-src attributes
-  const dataVideoSrc = $("[data-video-src]").attr("data-video-src");
-  if (dataVideoSrc) return dataVideoSrc;
+  // Common patterns: m3u8/mp4 URLs, jwplayer/players configs, generic file/src keys
+  const urlFromScripts =
+    scriptsText.match(
+      /https?:\/\/[^"'\s>]+\.(?:m3u8|mp4)(?:\?[^"'\s>]*)?/i,
+    )?.[0] ||
+    scriptsText.match(
+      /\b(?:file|src|source|url)\b\s*[:=]\s*["'](https?:[^"']+\.(?:m3u8|mp4)[^"']*)["']/i,
+    )?.[1];
+  if (urlFromScripts) return urlFromScripts;
 
-  // Check for video-related data attributes
-  const videoElement = $("[data-video-id], [data-video-url]");
-  if (videoElement.length > 0) {
-    const url =
-      videoElement.attr("data-video-url") || videoElement.attr("data-video-id");
-    if (url) return url;
+  // 4) Check data attributes commonly used by players
+  const dataUrl =
+    $("[data-video-src]").attr("data-video-src") ||
+    $("[data-src]").attr("data-src") ||
+    $("[data-url]").attr("data-url");
+  if (dataUrl && /\.(?:m3u8|mp4)(?:\?|$)/i.test(dataUrl)) return dataUrl;
+
+  // 5) Fallback to Puppeteer to capture dynamically loaded media URLs
+  let browser: puppeteer.Browser | undefined;
+  try {
+    browser = await puppeteer.launch({
+      headless: true,
+      executablePath: CHROMIUM_PATH,
+      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    });
+
+    const page = await browser.newPage();
+    let capturedUrl: string | null = null;
+
+    // Capture network media
+    page.on("response", (resp) => {
+      try {
+        const u = resp.url();
+        if (/\.(?:m3u8|mp4)(?:\?|$)/i.test(u) && resp.status() < 400) {
+          if (!capturedUrl) capturedUrl = u;
+        }
+      } catch {
+        // ignore
+      }
+    });
+
+    await page.goto(pageUrl, { waitUntil: "networkidle2", timeout: 30000 });
+
+    // Try DOM inspection after JS executes
+    const domUrl = (await page.evaluate(() => {
+      const s = document.querySelector<HTMLSourceElement>("video source");
+      if (s?.src) return s.src;
+      const v = document.querySelector("video");
+      if (v?.src) return v.src;
+      const i = document.querySelector("iframe");
+      if (i?.src && (i.src.includes("youtube") || i.src.includes("vimeo")))
+        return i.src;
+      return null as unknown as string | null;
+    })) as unknown as string | null;
+
+    if (domUrl) return domUrl;
+    if (capturedUrl) return capturedUrl;
+  } catch {
+    // ignore puppeteer issues
+  } finally {
+    if (browser) await browser.close();
   }
 
   console.warn("Could not find video URL in page");
@@ -322,12 +396,21 @@ async function downloadVideo(
   }
 }
 
-function sanitizeFilename(title: string): string {
-  // Extract episode number from title
-  // Handle formats like "Mental Health Mondays, Ep. 2" and "Mental Health Mondays, Ep 2"
-  const epMatch = title.match(/Ep\.?\s*(\d+)/i);
-  const epNum = epMatch ? epMatch[1] : new Date().toISOString().slice(0, 10);
-  return `Mental-Health-Mondays-Ep${epNum}.mp4`;
+function buildFilenameFromPubDate(pubDate?: string): string {
+  let dateStr: string | undefined;
+  if (pubDate) {
+    const d = new Date(pubDate);
+    if (!Number.isNaN(d.getTime())) {
+      const yyyy = d.getFullYear();
+      const mm = String(d.getMonth() + 1).padStart(2, "0");
+      const dd = String(d.getDate()).padStart(2, "0");
+      dateStr = `${yyyy}-${mm}-${dd}`;
+    }
+  }
+  if (!dateStr) {
+    dateStr = new Date().toISOString().slice(0, 10);
+  }
+  return `Mental-Health-Mondays-${dateStr}.mp4`;
 }
 
 async function extractAudio(videoFilename: string): Promise<boolean> {
@@ -380,7 +463,9 @@ async function main(): Promise<void> {
         continue;
       }
 
-      const filename = sanitizeFilename(video.title);
+      // Fetch article metadata first to derive filename from publication date
+      const meta = await fetchArticleMeta(video.url);
+      const filename = buildFilenameFromPubDate(meta.pubDate);
       const downloaded = await downloadVideo(videoUrl, filename);
 
       const audioPath = path.join(
@@ -398,10 +483,9 @@ async function main(): Promise<void> {
         }
       }
 
-      // Tag audio if it exists
+      // Tag audio if it exists (reusing fetched metadata)
       try {
         await fs.stat(audioPath);
-        const meta = await fetchArticleMeta(video.url);
         tagAudio(audioPath, meta);
         await setFileModTime(audioPath, meta.pubDate);
       } catch {

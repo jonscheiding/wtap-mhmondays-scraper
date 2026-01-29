@@ -24,12 +24,21 @@ pnpm lint --fix
 
 This will check for code quality issues and automatically fix those that can be corrected.
 
+### Type Checking
+
+Check for TypeScript build issues:
+
+```bash
+pnpm tsc --noEmit
+```
+
 ### Complete Workflow
 
 After making changes, run both commands in order:
 
 ```bash
-pnpm prettier -w
+pnpm prettier -w .
+pnpm tsc --noEmit
 pnpm lint --fix
 ```
 
