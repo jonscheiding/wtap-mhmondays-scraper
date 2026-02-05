@@ -7,7 +7,6 @@ import { pipeline } from "stream/promises";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import puppeteer from "puppeteer";
-import { parse as parseYAML, stringify as stringifyYAML } from "yaml";
 import nodeID3, { type Tags } from "node-id3";
 
 const execFileAsync = promisify(execFile);
@@ -18,11 +17,20 @@ const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), ".data");
 const CHROMIUM_PATH = process.env.CHROMIUM_PATH;
 const SEARCH_URL =
   "https://www.wtap.com/wtap-plus/podcasts/mental-health-mondays/";
-const YAML_OUTPUT_PATH =
-  process.env.YAML_OUTPUT_PATH ||
-  path.join(process.cwd(), ".data", "episodes.yml");
-const YAML_TEMPLATE_PATH =
-  process.env.YAML_TEMPLATE_PATH || path.join(process.cwd(), "template.yml");
+// Output locations
+const AUDIO_SUBDIR = process.env.AUDIO_SUBDIR || "mp3";
+const RSS_OUTPUT_FILENAME = process.env.RSS_OUTPUT_FILENAME || "podcast.xml";
+const FEED_BASE_URL = process.env.FEED_BASE_URL || ""; // e.g., https://example.com/podcast
+
+// Feed metadata (override via env)
+const FEED_TITLE = process.env.FEED_TITLE || "Mental Health Mondays";
+const FEED_AUTHOR = process.env.FEED_AUTHOR || "WTAP";
+const FEED_DESCRIPTION =
+  process.env.FEED_DESCRIPTION ||
+  "Audio feed generated from WTAP Mental Health Mondays videos.";
+const FEED_LANGUAGE = process.env.FEED_LANGUAGE || "en-us";
+const FEED_COPYRIGHT = process.env.FEED_COPYRIGHT || "";
+const FEED_IMAGE_URL = process.env.FEED_IMAGE_URL || "";
 
 interface VideoMetadata {
   streams?: VideoStream[];
@@ -42,6 +50,7 @@ interface VideoStream {
 async function ensureDataDir(): Promise<void> {
   try {
     await fs.mkdir(DATA_DIR, { recursive: true });
+    await fs.mkdir(path.join(DATA_DIR, AUDIO_SUBDIR), { recursive: true });
   } catch (error) {
     console.error("Failed to create .data directory:", error);
   }
@@ -351,90 +360,28 @@ function tagAudio(audioPath: string, meta: ArticleMeta): boolean {
   }
 }
 
-type EpisodeYaml = {
-  file: string;
+type EpisodeForFeed = {
+  file: string; // basename of the mp3
   title: string;
   description: string;
-  pub_date: string;
+  pub_date: string; // ISO
   explicit: boolean;
   season: number;
-  episode: number;
   episode_type: "full" | "trailer" | "bonus";
+  fileSize?: number; // bytes
+  duration?: string; // HH:MM:SS
 };
-
-type TemplateYaml = {
-  name?: string;
-  title?: string;
-  "author-name"?: string;
-  description?: string;
-  language?: string;
-  explicit?: boolean;
-  episodes?: EpisodeYaml[];
-  [k: string]: unknown;
-};
-
-async function readYamlTemplateOrExisting(
-  outPath: string,
-  templatePath: string,
-): Promise<TemplateYaml> {
-  try {
-    const text = await fs.readFile(outPath, "utf8");
-    return (parseYAML(text) as TemplateYaml) ?? {};
-  } catch {
-    // Fallback to template file in repo
-    try {
-      const text = await fs.readFile(templatePath, "utf8");
-      return (parseYAML(text) as TemplateYaml) ?? {};
-    } catch (err) {
-      console.warn(
-        "YAML template not found; creating a minimal structure",
-        err,
-      );
-      return { episodes: [] };
-    }
-  }
-}
-
-function upsertEpisodes(
-  doc: TemplateYaml,
-  newEpisodes: Omit<EpisodeYaml, "episode">[],
-): TemplateYaml {
-  const episodes = Array.isArray(doc.episodes) ? [...doc.episodes] : [];
-  const existingFiles = new Set(episodes.map((e) => e.file));
-  const existingMax = episodes.reduce((m, e) => Math.max(m, e.episode || 0), 0);
-  let next = existingMax + 1;
-
-  for (const ep of newEpisodes) {
-    // Skip if already present by filename
-    if (existingFiles.has(ep.file)) continue;
-    episodes.push({ ...ep, episode: next++ });
-    existingFiles.add(ep.file);
-  }
-
-  // Sort by episode number to keep things tidy
-  episodes.sort((a, b) => (a.episode ?? 0) - (b.episode ?? 0));
-  return { ...doc, episodes };
-}
-
-async function writeYaml(doc: TemplateYaml, outPath: string): Promise<void> {
-  const yaml = stringifyYAML(doc);
-  await fs.mkdir(path.dirname(outPath), { recursive: true });
-  await fs.writeFile(outPath, yaml, "utf8");
-  console.log(`Wrote YAML episode list: ${outPath}`);
-}
-
-function stripPlaceholderEpisodes(doc: TemplateYaml): TemplateYaml {
-  const episodes = Array.isArray(doc.episodes) ? doc.episodes : [];
-  const filtered = episodes.filter((e) => e.file !== "episode-filename.mp3");
-  return { ...doc, episodes: filtered };
-}
 
 async function downloadVideo(
   videoUrl: string,
   filename: string,
 ): Promise<boolean> {
   const filePath = path.join(DATA_DIR, filename);
-  const audioPath = path.join(DATA_DIR, filename.replace(/\.mp4$/i, ".mp3"));
+  const audioPath = path.join(
+    DATA_DIR,
+    AUDIO_SUBDIR,
+    filename.replace(/\.mp4$/i, ".mp3"),
+  );
 
   // Check if audio file already exists (no need to re-download/convert)
   try {
@@ -501,6 +448,7 @@ async function extractAudio(videoFilename: string): Promise<boolean> {
   const videoPath = path.join(DATA_DIR, videoFilename);
   const audioPath = path.join(
     DATA_DIR,
+    AUDIO_SUBDIR,
     videoFilename.replace(/\.mp4$/i, ".mp3"),
   );
 
@@ -527,6 +475,119 @@ async function extractAudio(videoFilename: string): Promise<boolean> {
   }
 }
 
+async function probeDurationSeconds(filePath: string): Promise<number | null> {
+  try {
+    const { stdout } = await execFileAsync("ffprobe", [
+      "-v",
+      "error",
+      "-show_entries",
+      "format=duration",
+      "-of",
+      "default=noprint_wrappers=1:nokey=1",
+      filePath,
+    ]);
+    const seconds = parseFloat(stdout.trim());
+    return Number.isFinite(seconds) ? seconds : null;
+  } catch {
+    return null;
+  }
+}
+
+function formatDurationHHMMSS(totalSeconds: number): string {
+  const sec = Math.floor(totalSeconds);
+  const h = Math.floor(sec / 3600)
+    .toString()
+    .padStart(2, "0");
+  const m = Math.floor((sec % 3600) / 60)
+    .toString()
+    .padStart(2, "0");
+  const s = Math.floor(sec % 60)
+    .toString()
+    .padStart(2, "0");
+  return `${h}:${m}:${s}`;
+}
+
+function xmlEscape(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+async function writeRssFeed(episodes: EpisodeForFeed[]): Promise<void> {
+  // Sort newest first for feed readers
+  const items = [...episodes].sort(
+    (a, b) => new Date(b.pub_date).getTime() - new Date(a.pub_date).getTime(),
+  );
+  const lastBuild = items[0]?.pub_date
+    ? new Date(items[0].pub_date).toUTCString()
+    : new Date().toUTCString();
+
+  const lines: string[] = [];
+  lines.push(`<?xml version="1.0" encoding="UTF-8"?>`);
+  lines.push(
+    `<rss version="2.0"\n  xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">`,
+  );
+  lines.push(`  <channel>`);
+  lines.push(`    <title>${xmlEscape(FEED_TITLE)}</title>`);
+  if (FEED_BASE_URL) lines.push(`    <link>${xmlEscape(FEED_BASE_URL)}</link>`);
+  lines.push(`    <description>${xmlEscape(FEED_DESCRIPTION)}</description>`);
+  lines.push(`    <language>${xmlEscape(FEED_LANGUAGE)}</language>`);
+  if (FEED_COPYRIGHT)
+    lines.push(`    <copyright>${xmlEscape(FEED_COPYRIGHT)}</copyright>`);
+  lines.push(`    <lastBuildDate>${lastBuild}</lastBuildDate>`);
+  lines.push(`    <itunes:author>${xmlEscape(FEED_AUTHOR)}</itunes:author>`);
+  lines.push(`    <itunes:explicit>no</itunes:explicit>`);
+  if (FEED_IMAGE_URL) {
+    lines.push(`    <image>`);
+    lines.push(`      <url>${xmlEscape(FEED_IMAGE_URL)}</url>`);
+    lines.push(`      <title>${xmlEscape(FEED_TITLE)}</title>`);
+    if (FEED_BASE_URL)
+      lines.push(`      <link>${xmlEscape(FEED_BASE_URL)}</link>`);
+    lines.push(`    </image>`);
+    lines.push(`    <itunes:image href="${xmlEscape(FEED_IMAGE_URL)}" />`);
+  }
+
+  for (const ep of items) {
+    const pubDate = new Date(ep.pub_date).toUTCString();
+    const enclosureUrl = [
+      FEED_BASE_URL?.replace(/\/?$/, ""),
+      AUDIO_SUBDIR,
+      ep.file,
+    ]
+      .filter(Boolean)
+      .join("/");
+    const guid = enclosureUrl || ep.file;
+    const enclosureLength = ep.fileSize ? String(ep.fileSize) : "0";
+
+    lines.push(`    <item>`);
+    lines.push(`      <title>${xmlEscape(ep.title)}</title>`);
+    lines.push(`      <description>${xmlEscape(ep.description)}</description>`);
+    lines.push(`      <pubDate>${pubDate}</pubDate>`);
+    lines.push(
+      `      <guid isPermaLink="${FEED_BASE_URL ? "true" : "false"}">${xmlEscape(guid)}</guid>`,
+    );
+    lines.push(
+      `      <enclosure url="${xmlEscape(enclosureUrl)}" length="${enclosureLength}" type="audio/mpeg" />`,
+    );
+    lines.push(
+      `      <itunes:explicit>${ep.explicit ? "yes" : "no"}</itunes:explicit>`,
+    );
+    if (ep.duration)
+      lines.push(`      <itunes:duration>${ep.duration}</itunes:duration>`);
+    lines.push(`    </item>`);
+  }
+
+  lines.push(`  </channel>`);
+  lines.push(`</rss>`);
+
+  const outPath = path.join(DATA_DIR, RSS_OUTPUT_FILENAME);
+  await fs.writeFile(outPath, lines.join("\n"), "utf8");
+  console.log(`Wrote RSS feed: ${outPath}`);
+}
+
 async function main(): Promise<void> {
   try {
     await ensureDataDir();
@@ -538,7 +599,7 @@ async function main(): Promise<void> {
       return;
     }
 
-    const episodesForYaml: Omit<EpisodeYaml, "episode">[] = [];
+    const episodesForFeed: EpisodeForFeed[] = [];
 
     for (const video of videos) {
       console.log(`\nProcessing: ${video.title}`);
@@ -556,6 +617,7 @@ async function main(): Promise<void> {
 
       const audioPath = path.join(
         DATA_DIR,
+        AUDIO_SUBDIR,
         filename.replace(/\.mp4$/i, ".mp3"),
       );
 
@@ -575,8 +637,12 @@ async function main(): Promise<void> {
         tagAudio(audioPath, meta);
         await setFileModTime(audioPath, meta.pubDate);
 
-        // Prepare YAML episode entry using available metadata
-        const yamlEp: Omit<EpisodeYaml, "episode"> = {
+        // Gather file stats and optional duration
+        const st = await fs.stat(audioPath);
+        const durSec = await probeDurationSeconds(audioPath);
+
+        // Prepare feed episode entry
+        const feedEp: EpisodeForFeed = {
           file: path.basename(audioPath),
           title: meta.title ?? "Mental Health Mondays",
           description: meta.description ?? "",
@@ -587,31 +653,17 @@ async function main(): Promise<void> {
           explicit: false,
           season: 1,
           episode_type: "full",
+          fileSize: st.size,
+          duration: durSec ? formatDurationHHMMSS(durSec) : undefined,
         };
-        episodesForYaml.push(yamlEp);
+        episodesForFeed.push(feedEp);
       } catch {
         console.warn(`Audio file not found, skipping tag for ${filename}`);
       }
     }
 
-    // Always generate/update YAML file
-    try {
-      const outPath = YAML_OUTPUT_PATH;
-      const doc = await readYamlTemplateOrExisting(outPath, YAML_TEMPLATE_PATH);
-
-      // Remove any placeholder example episodes from the template or existing file
-      const sanitized = stripPlaceholderEpisodes(doc);
-
-      // Sort new episodes by pub_date for deterministic numbering
-      episodesForYaml.sort(
-        (a, b) =>
-          new Date(a.pub_date).getTime() - new Date(b.pub_date).getTime(),
-      );
-      const updated = upsertEpisodes(sanitized, episodesForYaml);
-      await writeYaml(updated, outPath);
-    } catch (err) {
-      console.error("Failed to generate YAML file:", err);
-    }
+    // Generate RSS feed
+    await writeRssFeed(episodesForFeed);
 
     console.log("\nScraping complete!");
   } catch (error) {

@@ -1,6 +1,6 @@
 # WTAP Scraper
 
-A TypeScript-based web scraper that downloads "Mental Health Mondays" episodes from the WTAP news website.
+A TypeScript-based web scraper that downloads "Mental Health Mondays" episodes from the WTAP news website and generates a podcast-ready RSS feed.
 
 ## Features
 
@@ -9,7 +9,8 @@ A TypeScript-based web scraper that downloads "Mental Health Mondays" episodes f
 - Downloads videos in MP4 format
 - Stores videos in a `.data` directory
 - Checks for existing files to avoid re-downloading
-- Generates a YAML file listing episodes (can be saved separate from audio dir)
+- Extracts and tags MP3 audio into `.data/mp3/` (customizable)
+- Generates an RSS XML file in `.data/` for use in podcast players (file name customizable)
 
 ## Installation
 
@@ -31,8 +32,8 @@ The scraper will:
 2. Find all matching episode pages
 3. Extract video URLs from each page
 4. Download videos to the `.data` directory if they don't already exist
-5. Extract audio from videos and delete the original video files
-6. Update a YAML file with episode metadata
+5. Extract audio from videos to `.data/mp3/` and delete the original video files
+6. Generate/update an RSS XML feed in `.data/`
 
 ### Docker Usage
 
@@ -48,7 +49,7 @@ This will start the scraper container with:
 - Data directory: `./data` (mounted locally)
 - Auto-restart on failure
 
-#### Configure the schedule, data, and YAML output
+#### Configure the schedule, data, and RSS output
 
 Edit `docker-compose.yml` to customize:
 
@@ -61,9 +62,20 @@ environment:
   #   "30 1 * * 0"    - Every Sunday at 1:30 AM
   SCHEDULE: "0 2 * * *"
   DATA_DIR: /data
-  # YAML output configuration
-  YAML_OUTPUT_PATH: /config/episodes.yml # Destination path for YAML
-  YAML_TEMPLATE_PATH: /app/template.yml # Template to base output on
+  # Audio subdirectory under DATA_DIR
+  AUDIO_SUBDIR: mp3
+  # RSS output filename (written to DATA_DIR)
+  RSS_OUTPUT_FILENAME: podcast.xml
+  # Base URL used to build absolute enclosure URLs in the feed
+  # Example: https://example.com/podcast
+  FEED_BASE_URL: ""
+  # Optional feed metadata overrides
+  FEED_TITLE: "Mental Health Mondays"
+  FEED_AUTHOR: "WTAP"
+  FEED_DESCRIPTION: "Audio feed generated from WTAP Mental Health Mondays videos."
+  FEED_LANGUAGE: en-us
+  FEED_COPYRIGHT: ""
+  FEED_IMAGE_URL: ""
 ```
 
 #### Build Docker image manually
@@ -109,20 +121,15 @@ docker logs -f wtap-scraper
 - Downloads videos using streaming to handle large files efficiently
 - Saves with dates in filename (e.g., Mental-Health-Mondays-YYYY-MM-DD.mp4)
 
-### YAML Generation
+### RSS Feed Generation
 
-The scraper always maintains a YAML file with episode metadata:
+The scraper generates a podcast RSS feed compatible with common players:
 
-- Reads the existing YAML at `YAML_OUTPUT_PATH` if present, otherwise falls
-  back to `template.yml` in the project root
-- Removes placeholder/example entries from the template
-- Appends entries for episodes processed in the current run with:
-  - file: MP3 filename
-  - title, description, pub_date (from the article)
-  - explicit: false, season: 1, episode_type: full
-- Assigns a monotonically increasing `episode` number by taking the current
-  maximum in the YAML and incrementing for each new item
-- Avoids duplicates by skipping episodes whose `file` already exists in YAML
+- MP3 files are written to `${DATA_DIR}/${AUDIO_SUBDIR}` (default: `.data/mp3`)
+- An RSS XML file is written to `${DATA_DIR}/${RSS_OUTPUT_FILENAME}` (default: `.data/podcast.xml`)
+- Each item includes title, description, publication date, enclosure URL, and optional duration
+- Enclosure URLs are built from `FEED_BASE_URL` + `/${AUDIO_SUBDIR}/<filename>`; set `FEED_BASE_URL` to the public URL where you host the files
+- Feed metadata (title, author, description, language, image) can be customized via environment variables
 
 ## File Structure
 
@@ -130,7 +137,9 @@ The scraper always maintains a YAML file with episode metadata:
 .
 ├── src/
 │   └── scraper.ts           # Main scraper script
-├── .data/                    # Downloaded audio files (gitignored)
+├── .data/                    # Downloaded data (gitignored)
+│   └── mp3/                  # Extracted audio files (default subdir)
+│   └── podcast.xml           # Generated RSS feed (default filename)
 ├── data/                     # Docker mounted data directory
 ├── Dockerfile                # Container image definition
 ├── docker-compose.yml        # Docker Compose configuration

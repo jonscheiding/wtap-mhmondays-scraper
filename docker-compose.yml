@@ -13,6 +13,20 @@ services:
       SCHEDULE: "0 2 * * *"
       # Data directory where audio files will be stored
       DATA_DIR: /data
+      # Audio subdirectory under DATA_DIR
+      AUDIO_SUBDIR: mp3
+      # RSS feed filename written to DATA_DIR
+      RSS_OUTPUT_FILENAME: podcast.xml
+      # Public base URL used to build enclosure URLs in the RSS feed
+      # Example: https://example.com/podcast
+      FEED_BASE_URL: ""
+      # Optional feed metadata
+      FEED_TITLE: "Mental Health Mondays"
+      FEED_AUTHOR: "WTAP"
+      FEED_DESCRIPTION: "Audio feed generated from WTAP Mental Health Mondays videos."
+      FEED_LANGUAGE: en-us
+      FEED_COPYRIGHT: ""
+      FEED_IMAGE_URL: ""
       NODE_ENV: production
     volumes:
       # Mount local directory to persist downloaded audio files
