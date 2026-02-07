@@ -550,7 +550,8 @@ async function writeRssFeed(episodes: EpisodeForFeed[]): Promise<void> {
     lines.push(`    <itunes:image href="${xmlEscape(FEED_IMAGE_URL)}" />`);
   }
 
-  for (const ep of items) {
+  for (let episodeNumber = 1; episodeNumber <= items.length; episodeNumber++) {
+    const ep = items[items.length - episodeNumber];
     const pubDate = new Date(ep.pub_date).toUTCString();
     const enclosureUrl = [
       FEED_BASE_URL?.replace(/\/?$/, ""),
@@ -572,6 +573,8 @@ async function writeRssFeed(episodes: EpisodeForFeed[]): Promise<void> {
     lines.push(
       `      <enclosure url="${xmlEscape(enclosureUrl)}" length="${enclosureLength}" type="audio/mpeg" />`,
     );
+    lines.push(`      <itunes:season>1</itunes:season>`);
+    lines.push(`      <itunes:episode>${episodeNumber}</itunes:episode>`);
     lines.push(
       `      <itunes:explicit>${ep.explicit ? "yes" : "no"}</itunes:explicit>`,
     );
